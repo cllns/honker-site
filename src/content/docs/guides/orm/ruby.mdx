@@ -1,9 +1,9 @@
 ---
 title: Ruby ORM integration
-description: Use Honker from ActiveRecord and Rails by loading the SQLite extension and wrapping honker_* SQL calls.
+description: Use Honker from Rails/ActiveRecord or Sequel by loading the SQLite extension and wrapping honker_* SQL calls.
 ---
 
-Rails and ActiveRecord can load SQLite extensions through the sqlite3 gem configuration. Once loaded, Honker calls are ordinary SQL inside `ActiveRecord::Base.transaction`.
+Rails and ActiveRecord can load SQLite extensions through the sqlite3 gem configuration. Sequel loads them through an `after_connect` hook. Once loaded, Honker calls are ordinary SQL inside the ORM's transaction.
 
 ## ActiveRecord (Rails)
 
@@ -67,3 +67,65 @@ end
 ```
 
 Workers run as a separate process using the [`honker` Ruby gem](https://rubygems.org/gems/honker).
+
+## Sequel
+
+Sequel loads SQLite extensions through an `after_connect` hook on `Sequel.connect`. Once the extension is loaded, `honker_*` functions are callable through Sequel's normal query API.
+
+### Wiring
+
+```ruby
+# config/db.rb
+require "sequel"
+
+EXT_PATH = ENV.fetch("HONKER_EXTENSION_PATH", "/path/to/libhonker_ext")
+
+DB = Sequel.connect(
+  "sqlite://storage/app.db",
+  after_connect: proc do |conn|
+    conn.enable_load_extension(true)
+    conn.load_extension(EXT_PATH)
+    conn.enable_load_extension(false)
+  end,
+)
+
+DB.run("SELECT honker_bootstrap()")
+```
+
+Storing the connection in a top-level `DB` constant is Sequel's recommended convention: `Sequel::Model` classes and the `Honker` wrapper below both resolve it from there, so the whole process shares one connection pool.
+
+`honker_bootstrap` is idempotent — safe on every connect in development; move it to a one-time migration or boot hook in production.
+
+### Wrapper
+
+```ruby
+# lib/honker.rb
+module Honker
+  def self.enqueue(queue, payload, delay: nil, priority: 0, max_attempts: 3)
+    DB.get(
+      Sequel.function(
+        :honker_enqueue,
+        queue, payload.to_json, nil, delay, priority, max_attempts, nil,
+      ),
+    )
+  end
+
+  def self.notify(channel, payload = nil)
+    DB.get(Sequel.function(:notify, channel, payload && payload.to_json))
+  end
+end
+```
+
+`Sequel.function` binds arguments through Sequel's expression layer, so payloads and channel names are parameterized rather than interpolated. `DB.get(expr)` runs `SELECT expr` and returns the single scalar result.
+
+### Usage
+
+`Order` is an ordinary `Sequel::Model` that resolves the `DB` constant automatically. Wrap the model write and the Honker calls in `DB.transaction` so they commit — or roll back — together:
+
+```ruby
+DB.transaction do
+  Order.create(user_id: 42, total: 9900)
+  Honker.enqueue("emails", { to: "alice@example.com" })
+  Honker.notify("orders", { id: 42 })
+end
+```
