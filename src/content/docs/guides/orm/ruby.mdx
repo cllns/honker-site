@@ -1,9 +1,9 @@
 ---
 title: Ruby ORM integration
-description: Use Honker from Rails/ActiveRecord, Sequel, or Rom by loading the SQLite extension and wrapping honker_* SQL calls.
+description: Use Honker from Rails/ActiveRecord, Sequel, Rom, or Hanami by loading the SQLite extension and wrapping honker_* SQL calls.
 ---
 
-Rails and ActiveRecord can load SQLite extensions through the sqlite3 gem configuration. Sequel loads them through an `after_connect` hook, and Rom (built on Sequel) does the same. Once loaded, Honker calls are ordinary SQL inside the database's transaction.
+Rails and ActiveRecord can load SQLite extensions through the sqlite3 gem configuration. Sequel loads them through an `after_connect` hook, and Rom (built on Sequel) and Hanami (built on Rom) do the same. Once loaded, Honker calls are ordinary SQL inside the database's transaction.
 
 ## ActiveRecord (Rails)
 
@@ -212,3 +212,48 @@ rom.commands[:honker][:enqueue].call(queue: "emails", payload: { to: "alice@exam
 ```
 
 The friction: the command machinery is tuple-shaped. `execute` must return an *array of tuples*, so the scalar id gets wrapped as `[{ id: id }]` for `result :one` to unwrap. For a single SQL function call returning one value, the repository method above is the simpler fit — the command is worth it mainly for encapsulation: a named, registered component on equal footing with the rest of your command layer, testable in isolation. (As an aside, that also makes it composable with ROM's `>>` operator, though a side-effecting function call rarely benefits.)
+
+### Hanami
+
+Hanami's `hanami-db` is built on ROM::SQL, so the recipe above carries over. The extension load just moves into Hanami's database provider:
+
+```ruby
+# config/providers/db.rb
+Hanami.app.configure_provider(:db) do
+  config.gateway(:default) do |gateway|
+    gateway.connection_options(
+      after_connect: proc do |conn|
+        conn.enable_load_extension(true)
+        conn.load_extension(ENV.fetch("HONKER_EXTENSION_PATH"))
+        conn.enable_load_extension(false)
+      end,
+    )
+  end
+end
+```
+
+The relation and repo are the same as above, written as Hanami classes:
+
+```ruby
+# app/relations/honker.rb
+module YourApp
+  module Relations
+    class Honker < Hanami::DB::Relation
+      schema(:_honker_live, as: :honker, infer: true)
+    end
+  end
+end
+```
+
+```ruby
+# app/repos/honker_repo.rb
+module YourApp
+  module Repos
+    class HonkerRepo < Hanami::DB::Repo
+      # enqueue / notify exactly as in the Rom recipe above
+    end
+  end
+end
+```
+
+Prefer the [custom command](#alternative-a-custom-command)? Put the same class in `app/db/commands/` and Hanami registers it automatically.
