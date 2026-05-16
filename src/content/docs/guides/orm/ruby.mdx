@@ -1,9 +1,9 @@
 ---
 title: Ruby ORM integration
-description: Use Honker from Rails/ActiveRecord or Sequel by loading the SQLite extension and wrapping honker_* SQL calls.
+description: Use Honker from Rails/ActiveRecord, Sequel, or Rom by loading the SQLite extension and wrapping honker_* SQL calls.
 ---
 
-Rails and ActiveRecord can load SQLite extensions through the sqlite3 gem configuration. Sequel loads them through an `after_connect` hook. Once loaded, Honker calls are ordinary SQL inside the ORM's transaction.
+Rails and ActiveRecord can load SQLite extensions through the sqlite3 gem configuration. Sequel loads them through an `after_connect` hook, and Rom (built on Sequel) does the same. Once loaded, Honker calls are ordinary SQL inside the database's transaction.
 
 ## ActiveRecord (Rails)
 
@@ -129,3 +129,86 @@ DB.transaction do
   Honker.notify("orders", { id: 42 })
 end
 ```
+
+## Rom (with ROM::SQL)
+
+[rom-sql](https://hanakai.org/rom) is built on Sequel, so the Honker integration is nearly identical to the [Sequel recipe above](#sequel) — the same `after_connect` extension load and the same `Sequel.function` calls. Rom forwards connection options straight through to `Sequel.connect`.
+
+Build the `Sequel::Database` first, so the extension loads and `honker_bootstrap` runs before Rom infers relation schemas, then hand it to the container:
+
+```ruby
+sequel_db = Sequel.connect(
+  "sqlite://storage/app.db",
+  after_connect: proc do |conn|
+    conn.enable_load_extension(true)
+    conn.load_extension(EXT_PATH)
+    conn.enable_load_extension(false)
+  end,
+)
+sequel_db.run("SELECT honker_bootstrap()")
+
+rom = ROM.container(:sql, sequel_db) do |config|
+  config.relation(:honker) { schema(:_honker_live, infer: true) }
+  # ... your other relations
+end
+```
+
+The `:honker` relation points at Honker's internal queue table only so the wrapper has a connection to reach — you never query it for business logic. A repository is the natural home for the same `Sequel.function` call the Sequel recipe uses:
+
+```ruby
+class HonkerRepo < ROM::Repository[:honker]
+  def enqueue(queue, payload, delay: nil, priority: 0, max_attempts: 3)
+    honker.dataset.db.get(
+      Sequel.function(
+        :honker_enqueue,
+        queue, payload.to_json, nil, delay, priority, max_attempts, nil,
+      ),
+    )
+  end
+
+  def notify(channel, payload = nil)
+    honker.dataset.db.get(
+      Sequel.function(:notify, channel, payload && payload.to_json),
+    )
+  end
+end
+```
+
+Transactions still go through Sequel — Rom commands and the Honker calls share the connection, so an exception inside the block rolls back the business write and the enqueue together.
+
+### Alternative: a custom command
+
+If you'd rather the enqueue look like a first-class Rom operation, register a custom command instead of a repository method. Subclass `ROM::SQL::Commands::Create`, point it at the `:honker` relation, and override `execute`:
+
+```ruby
+class EnqueueCommand < ROM::SQL::Commands::Create
+  relation :honker
+  register_as :enqueue
+  result :one
+
+  def execute(tuple)
+    id = relation.dataset.db.get(
+      Sequel.function(
+        :honker_enqueue,
+        tuple.fetch(:queue), tuple.fetch(:payload).to_json,
+        nil, nil, 0, 3, nil,
+      ),
+    )
+    [{ id: id }]
+  end
+end
+```
+
+Register it in the container block, then call it through `rom.commands`:
+
+```ruby
+rom = ROM.container(:sql, sequel_db) do |config|
+  config.relation(:honker) { schema(:_honker_live, infer: true) }
+  config.register_command(EnqueueCommand)
+end
+
+rom.commands[:honker][:enqueue].call(queue: "emails", payload: { to: "alice@example.com" })
+# => {id: 1}
+```
+
+The friction: the command machinery is tuple-shaped. `execute` must return an *array of tuples*, so the scalar id gets wrapped as `[{ id: id }]` for `result :one` to unwrap. For a single SQL function call returning one value, the repository method above is the simpler fit — the command is worth it mainly for encapsulation: a named, registered component on equal footing with the rest of your command layer, testable in isolation. (As an aside, that also makes it composable with ROM's `>>` operator, though a side-effecting function call rarely benefits.)
