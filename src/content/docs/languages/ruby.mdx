@@ -56,7 +56,11 @@ For Rails and ActiveRecord, load the Honker extension on the ActiveRecord
 SQLite connection, then call `honker_enqueue` or `notify` inside
 `ActiveRecord::Base.transaction`.
 
-See the full [Ruby ORM recipe](/guides/orm/ruby/) for Rails initialization and
+The same approach works for Sequel, Rom (with ROM::SQL), and Hanami (with
+`hanami-db`): load the extension on the connection your library opens, then
+call `honker_*` inside its transaction.
+
+See the full [Ruby ORM recipe](/guides/orm/ruby/) for per-library wiring and
 a small wrapper module.
 
 ## Testing
