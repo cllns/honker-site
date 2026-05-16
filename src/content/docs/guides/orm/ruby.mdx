@@ -46,10 +46,10 @@ module Honker
     ActiveRecord::Base.connection.select_value(sql)
   end
 
-  def self.notify(channel, payload = nil)
+  def self.notify(channel, payload)
     sql = ActiveRecord::Base.sanitize_sql_array([
       "SELECT notify(?, ?)",
-      channel, payload ? payload.to_json : nil
+      channel, payload.to_json
     ])
     ActiveRecord::Base.connection.execute(sql)
   end
@@ -110,8 +110,8 @@ module Honker
     )
   end
 
-  def self.notify(channel, payload = nil)
-    DB.get(Sequel.function(:notify, channel, payload && payload.to_json))
+  def self.notify(channel, payload)
+    DB.get(Sequel.function(:notify, channel, payload.to_json))
   end
 end
 ```
@@ -166,9 +166,9 @@ class HonkerRepo < ROM::Repository[:honker]
     )
   end
 
-  def notify(channel, payload = nil)
+  def notify(channel, payload)
     honker.dataset.db.get(
-      Sequel.function(:notify, channel, payload && payload.to_json),
+      Sequel.function(:notify, channel, payload.to_json),
     )
   end
 end
