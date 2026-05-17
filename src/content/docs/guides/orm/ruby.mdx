@@ -213,6 +213,32 @@ rom.commands[:honker][:enqueue].call(queue: "emails", payload: { to: "alice@exam
 
 The friction: the command machinery is tuple-shaped. `execute` must return an *array of tuples*, so the scalar id gets wrapped as `[{ id: id }]` for `result :one` to unwrap. For a single SQL function call returning one value, the repository method above is the simpler fit — the command is worth it mainly for encapsulation: a named, registered component on equal footing with the rest of your command layer, testable in isolation. (As an aside, that also makes it composable with ROM's `>>` operator, though a side-effecting function call rarely benefits.)
 
+### Doing it from a dry-operation
+
+You most likely want the enqueue at the repo level, as shown above. But sometimes you want to enqueue a job or fire a notification ad-hoc, right where one particular workflow calls for it. If your app uses [`dry-operation`](https://rubygems.org/gems/dry-operation), that fits naturally inside the operation itself.
+
+The ROM extension adds a `transaction` method that wraps the enclosed steps in a Rom transaction and rolls back automatically if any step returns a `Failure`:
+
+```ruby
+class PlaceOrder < Dry::Operation
+  include Deps["repos.orders_repo", "repos.honker_repo"]
+
+  # include Dry::Operation::Extensions::ROM
+
+  def call(input)
+    transaction do
+      order = step orders_repo.create(input)
+      honker_repo.enqueue("emails", { to: input[:email], order_id: order.id })
+      order
+    end
+  end
+end
+```
+
+In a Hanami app that is the whole operation: Hanami requires `dry/operation/extensions/rom` and includes `Dry::Operation::Extensions::ROM` for you, and injects `rom` from the slice. Outside Hanami, add `require "dry/operation/extensions/rom"` and uncomment the `include` (that extension is what defines `transaction`), plus supply a `#rom` method returning the Rom container.
+
+The `honker_enqueue` call still lives in a repo (or wrapper); the operation only adds orchestration and the rollback-on-`Failure` boundary.
+
 ### Hanami
 
 Hanami's `hanami-db` is built on ROM::SQL, so the recipe above carries over. The extension load just moves into Hanami's database provider:
