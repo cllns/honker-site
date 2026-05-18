@@ -134,24 +134,23 @@ end
 
 [rom-sql](https://hanakai.org/rom) is built on Sequel, so the Honker integration is nearly identical to the [Sequel recipe above](#sequel) — the same `after_connect` extension load and the same `Sequel.function` calls. Rom forwards connection options straight through to `Sequel.connect`.
 
-Build the `Sequel::Database` first, so the extension loads and `honker_bootstrap` runs before Rom infers relation schemas, then hand it to the container:
+Pass the connection string and `after_connect` straight to `ROM.container`; rom-sql forwards them to `Sequel.connect`. Running `honker_bootstrap` inside `after_connect` makes sure `_honker_live` exists before Rom infers relation schemas:
 
 ```ruby
-sequel_db = Sequel.connect(
-  "sqlite://storage/app.db",
+rom = ROM.container(:sql, "sqlite://storage/app.db",
   after_connect: proc do |conn|
     conn.enable_load_extension(true)
     conn.load_extension(EXT_PATH)
     conn.enable_load_extension(false)
+    conn.execute("SELECT honker_bootstrap()") # idempotent; can also live in a migration
   end,
-)
-sequel_db.run("SELECT honker_bootstrap()")
-
-rom = ROM.container(:sql, sequel_db) do |config|
+) do |config|
   config.relation(:honker) { schema(:_honker_live, infer: true) }
   # ... your other relations
 end
 ```
+
+If you'd rather keep connection setup separate, build the `Sequel::Database` yourself, run `honker_bootstrap` on it, then hand the object to `ROM.container(:sql, sequel_db)`. Just make sure the bootstrap runs before the container is built, since schema inference reads `_honker_live` at that point.
 
 The `:honker` relation points at Honker's internal queue table only so the wrapper has a connection to reach — you never query it for business logic. A repository is the natural home for the same `Sequel.function` call the Sequel recipe uses:
 
