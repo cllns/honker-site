@@ -226,7 +226,7 @@ class PlaceOrder < Dry::Operation
 
   def call(input)
     transaction do
-      order = step orders_repo.create(input)
+      order = orders_repo.create(input)
       honker_repo.enqueue("emails", { to: input[:email], order_id: order.id })
       order
     end
@@ -251,6 +251,7 @@ Hanami.app.configure_provider(:db) do
         conn.enable_load_extension(true)
         conn.load_extension(ENV.fetch("HONKER_EXTENSION_PATH"))
         conn.enable_load_extension(false)
+        conn.execute("SELECT honker_bootstrap()") # idempotent; can also live in a migration
       end,
     )
   end
